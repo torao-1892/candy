@@ -1,16 +1,11 @@
 /** File: candy.js
  * Candy - Chats are not dead yet.
  *
- * Authors:
- *   - Patrick Stadler <patrick.stadler@gmail.com>
- *   - Michael Weibel <michael.weibel@gmail.com>
- *
- * Copyright:
- *   (c) 2011 Amiado Group AG. All rights reserved.
+ * Legal: See the LICENSE file at the top-level directory of this distribution and at https://github.com/candy-chat/candy/blob/master/LICENSE
  */
+'use strict';
 
-/*jslint regexp: true, browser: true, confusion: true, sloppy: true, white: true, nomen: true, plusplus: true, maxerr: 50, indent: 4 */
-/*global jQuery: true, MD5: true, escape: true, Mustache: true, console: true, Strophe: true, $iq: true, $pres: true */
+/* global jQuery */
 
 /** Class: Candy
  * Candy base class for initalizing the view and the core
@@ -29,7 +24,7 @@ var Candy = (function(self, $) {
 	 */
 	self.about = {
 		name: 'Candy',
-		version: '1.0.9'
+		version: '2.2.0'
 	};
 
 	/** Function: init
@@ -44,7 +39,10 @@ var Candy = (function(self, $) {
 	 *   (Array|Boolean) autojoin - Autojoin these channels. When boolean true, do not autojoin, wait if the server sends something.
 	 */
 	self.init = function(service, options) {
-		self.View.init($('#candy'), options.view);
+		if (!options.viewClass) {
+			options.viewClass = self.View;
+		}
+		options.viewClass.init($('#candy'), options.view);
 		self.Core.init(service, options.core);
 	};
 

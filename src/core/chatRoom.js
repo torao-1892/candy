@@ -1,13 +1,11 @@
 /** File: chatRoom.js
  * Candy - Chats are not dead yet.
  *
- * Authors:
- *   - Patrick Stadler <patrick.stadler@gmail.com>
- *   - Michael Weibel <michael.weibel@gmail.com>
- *
- * Copyright:
- *   (c) 2011 Amiado Group AG. All rights reserved.
+ * Legal: See the LICENSE file at the top-level directory of this distribution and at https://github.com/candy-chat/candy/blob/master/LICENSE
  */
+'use strict';
+
+/* global Candy, Strophe */
 
 /** Class: Candy.Core.ChatRoom
  * Candy Chat Room
@@ -21,7 +19,7 @@ Candy.Core.ChatRoom = function(roomJid) {
 	 */
 	this.room = {
 		jid: roomJid,
-		name: null
+		name: Strophe.getNodeFromJid(roomJid)
 	};
 
 	/** Variable: user
@@ -33,74 +31,74 @@ Candy.Core.ChatRoom = function(roomJid) {
 	 * Candy.Core.ChatRoster instance
 	 */
 	this.roster = new Candy.Core.ChatRoster();
+};
 
-	/** Function: setUser
-	 * Set user of this room.
-	 *
-	 * Parameters:
-	 *   (Candy.Core.ChatUser) user - Chat user
-	 */
-	this.setUser = function(user) {
-		this.user = user;
-	};
+/** Function: setUser
+ * Set user of this room.
+ *
+ * Parameters:
+ *   (Candy.Core.ChatUser) user - Chat user
+ */
+Candy.Core.ChatRoom.prototype.setUser = function(user) {
+	this.user = user;
+};
 
-	/** Function: getUser
-	 * Get current local user
-	 *
-	 * Returns:
-	 *   (Object) - Candy.Core.ChatUser instance or null
-	 */
-	this.getUser = function() {
-		return this.user;
-	};
+/** Function: getUser
+ * Get current local user
+ *
+ * Returns:
+ *   (Object) - Candy.Core.ChatUser instance or null
+ */
+Candy.Core.ChatRoom.prototype.getUser = function() {
+	return this.user;
+};
 
-	/** Function: getJid
-	 * Get room jid
-	 *
-	 * Returns:
-	 *   (String) - Room jid
-	 */
-	this.getJid = function() {
-		return this.room.jid;
-	};
+/** Function: getJid
+ * Get room jid
+ *
+ * Returns:
+ *   (String) - Room jid
+ */
+Candy.Core.ChatRoom.prototype.getJid = function() {
+	return this.room.jid;
+};
 
-	/** Function: setName
-	 * Set room name
-	 *
-	 * Parameters:
-	 *   (String) name - Room name
-	 */
-	this.setName = function(name) {
-		this.room.name = name;
-	};
+/** Function: setName
+ * Set room name
+ *
+ * Parameters:
+ *   (String) name - Room name
+ */
+Candy.Core.ChatRoom.prototype.setName = function(name) {
+	this.room.name = name;
+};
 
-	/** Function: getName
-	 * Get room name
-	 *
-	 * Returns:
-	 *   (String) - Room name
-	 */
-	this.getName = function() {
-		return this.room.name;
-	};
+/** Function: getName
+ * Get room name
+ *
+ * Returns:
+ *   (String) - Room name
+ */
+Candy.Core.ChatRoom.prototype.getName = function() {
+	return this.room.name;
+};
 
-	/** Function: setRoster
-	 * Set roster of room
-	 *
-	 * Parameters:
-	 *   (Candy.Core.ChatRoster) roster - Chat roster
-	 */
-	this.setRoster = function(roster) {
-		this.roster = roster;
-	};
+/** Function: setRoster
+ * Set roster of room
+ *
+ * Parameters:
+ *   (Candy.Core.ChatRoster) roster - Chat roster
+ */
+Candy.Core.ChatRoom.prototype.setRoster = function(roster) {
+	this.roster = roster;
+};
 
-	/** Function: getRoster
-	 * Get roster
-	 *
-	 * Returns
-	 *   (Candy.Core.ChatRoster) - instance
-	 */
-	this.getRoster = function() {
-		return this.roster;
-	};
+/** Function: getRoster
+ * Get roster
+ *
+ * Returns
+ *   (Candy.Core.ChatRoster) - instance
+ */
+Candy.Core.ChatRoom.prototype.getRoster = function() {
+	return this.roster;
 };

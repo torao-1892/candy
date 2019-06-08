@@ -1,13 +1,11 @@
 /** File: core.js
  * Candy - Chats are not dead yet.
  *
- * Authors:
- *   - Patrick Stadler <patrick.stadler@gmail.com>
- *   - Michael Weibel <michael.weibel@gmail.com>
- *
- * Copyright:
- *   (c) 2011 Amiado Group AG. All rights reserved.
+ * Legal: See the LICENSE file at the top-level directory of this distribution and at https://github.com/candy-chat/candy/blob/master/LICENSE
  */
+'use strict';
+
+/* global Candy, window, Strophe, jQuery */
 
 /** Class: Candy.Core
  * Candy Chat Core
@@ -30,6 +28,10 @@ Candy.Core = (function(self, Strophe, $) {
 		 * Current user (me)
 		 */
 		_user = null,
+		/** PrivateVariable: _roster
+		 * Main roster of contacts
+		 */
+		_roster = null,
 		/** PrivateVariable: _rooms
 		 * Opened rooms, containing instances of Candy.Core.ChatRooms
 		 */
@@ -38,18 +40,82 @@ Candy.Core = (function(self, Strophe, $) {
 		 * Set in <Candy.Core.connect> when jidOrHost doesn't contain a @-char.
 		 */
 		_anonymousConnection = false,
+		/** PrivateVariable: _status
+		 * Current Strophe connection state
+		 */
+		_status,
 		/** PrivateVariable: _options
-		 * Options:
-		 *   (Boolean) debug - Debug (Default: false)
-		 *   (Array|Boolean) autojoin - Autojoin these channels. When boolean true, do not autojoin, wait if the server sends something.
+		 * Config options
 		 */
 		_options = {
 			/** Boolean: autojoin
-			 * If set to `true` try to get the bookmarks and autojoin the rooms (supported by Openfire).
+			 * If set to `true` try to get the bookmarks and autojoin the rooms (supported by ejabberd, Openfire).
 			 * You may want to define an array of rooms to autojoin: `['room1@conference.host.tld', 'room2...]` (ejabberd, Openfire, ...)
 			 */
-			autojoin: true,
-			debug: false
+			autojoin: undefined,
+			/** Boolean: disconnectWithoutTabs
+			 * If you set to `false`, when you close all of the tabs, the service does not disconnect.
+			 * Set to `true`, when you close all of the tabs, the service will disconnect.
+			 */
+			disconnectWithoutTabs: true,
+			/** String: conferenceDomain
+			 * Holds the prefix for an XMPP chat server's conference subdomain.
+			 * If not set, assumes no specific subdomain.
+			 */
+			conferenceDomain: undefined,
+			/** Boolean: debug
+			 * Enable debug
+			 */
+			debug: false,
+			/** List: domains
+			 * If non-null, causes login form to offer this
+			 * pre-set list of domains to choose between when
+			 * logging in.  Any user-provided domain is discarded
+			 * and the selected domain is appended.
+			 * For each list item, only characters up to the first
+			 * whitespace are used, so you can append extra
+			 * information to each item if desired.
+			 */
+			domains: null,
+			/** Boolean: hideDomainList
+			 * If true, the domain list defined above is suppressed.
+			 * Without a selector displayed, the default domain
+			 * (usually the first one listed) will be used as
+			 * described above.  Probably only makes sense with a
+			 * single domain defined.
+			 */
+			hideDomainList: false,
+			/** Boolean: disableCoreNotifications
+			 * If set to `true`, the built-in notifications (sounds and badges) are disabled.
+			 * This is useful if you are using a plugin to handle notifications.
+			 */
+			disableCoreNotifications: false,
+			/** Boolean: disableWindowUnload
+			 * Disable window unload handler which usually disconnects from XMPP
+			 */
+			disableWindowUnload: false,
+			/** Integer: presencePriority
+			 * Default priority for presence messages in order to receive messages across different resources
+			 */
+			presencePriority: 1,
+			/** String: resource
+			 * JID resource to use when connecting to the server.
+			 * Specify `''` (an empty string) to request a random resource.
+			 */
+			resource: Candy.about.name,
+			/** Boolean: useParticipantRealJid
+			 * If set true, will direct one-on-one chats to participant's real JID rather than their MUC jid
+			 */
+			useParticipantRealJid: false,
+			/**
+			 * Roster version we claim to already have. Used when loading a cached roster.
+			 * Defaults to null, indicating we don't have the roster.
+			 */
+			initialRosterVersion: null,
+			/**
+			 * Initial roster items. Loaded from a cache, used to bootstrap displaying a roster prior to fetching updates.
+			 */
+			initialRosterItems: []
 		},
 
 		/** PrivateFunction: _addNamespace
@@ -70,27 +136,23 @@ Candy.Core = (function(self, Strophe, $) {
 			_addNamespace('PRIVATE', 'jabber:iq:private');
 			_addNamespace('BOOKMARKS', 'storage:bookmarks');
 			_addNamespace('PRIVACY', 'jabber:iq:privacy');
-			_addNamespace('DELAY', 'jabber:x:delay');
+			_addNamespace('DELAY', 'urn:xmpp:delay');
+			_addNamespace('JABBER_DELAY', 'jabber:x:delay');
+			_addNamespace('PUBSUB', 'http://jabber.org/protocol/pubsub');
+			_addNamespace('CARBONS', 'urn:xmpp:carbons:2');
 		},
 
-		/** PrivateFunction: _registerEventHandlers
-		 * Adds listening handlers to the connection.
-		 */
-		_registerEventHandlers = function() {
-			self.addHandler(self.Event.Jabber.Version, Strophe.NS.VERSION, 'iq');
-			self.addHandler(self.Event.Jabber.Presence, null, 'presence');
-			self.addHandler(self.Event.Jabber.Message, null, 'message');
-			self.addHandler(self.Event.Jabber.Bookmarks, Strophe.NS.PRIVATE, 'iq');
-			self.addHandler(self.Event.Jabber.Room.Disco, Strophe.NS.DISCO_INFO, 'iq');
-			self.addHandler(self.Event.Jabber.PrivacyList, Strophe.NS.PRIVACY, 'iq', 'result');
-			self.addHandler(self.Event.Jabber.PrivacyListError, Strophe.NS.PRIVACY, 'iq', 'error');
+		_getEscapedJidFromJid = function(jid) {
+			var node = Strophe.getNodeFromJid(jid),
+				domain = Strophe.getDomainFromJid(jid);
+			return node ? Strophe.escapeNode(node) + '@' + domain : domain;
 		};
 
 	/** Function: init
 	 * Initialize Core.
 	 *
 	 * Parameters:
-	 *   (String) service - URL of BOSH service
+	 *   (String) service - URL of BOSH/Websocket service
 	 *   (Object) options - Options for candy
 	 */
 	self.init = function(service, options) {
@@ -100,36 +162,79 @@ Candy.Core = (function(self, Strophe, $) {
 
 		// Enable debug logging
 		if(_options.debug) {
-			self.log = function(str) {
-				try { // prevent erroring
-					if(typeof window.console !== undefined && typeof window.console.log !== undefined) {
-						console.log(str);
-					}
-				} catch(e) {
-					//console.error(e);
+			if(typeof window.console !== 'undefined' && typeof window.console.log !== 'undefined') {
+				// Strophe has a polyfill for bind which doesn't work in IE8.
+				if(Function.prototype.bind && Candy.Util.getIeVersion() > 8) {
+					self.log = Function.prototype.bind.call(console.log, console);
+				} else {
+					self.log = function() {
+						Function.prototype.apply.call(console.log, console, arguments);
+					};
 				}
+			}
+			Strophe.log = function (level, message) {
+				var level_name, console_level;
+				switch (level) {
+					case Strophe.LogLevel.DEBUG:
+						level_name = 'DEBUG';
+						console_level = 'log';
+						break;
+					case Strophe.LogLevel.INFO:
+						level_name = 'INFO';
+						console_level = 'info';
+						break;
+					case Strophe.LogLevel.WARN:
+						level_name = 'WARN';
+						console_level = 'info';
+						break;
+					case Strophe.LogLevel.ERROR:
+						level_name = 'ERROR';
+						console_level = 'error';
+						break;
+					case Strophe.LogLevel.FATAL:
+						level_name = 'FATAL';
+						console_level = 'error';
+						break;
+				}
+				console[console_level]('[Strophe][' + level_name + ']: ' + message);
 			};
 			self.log('[Init] Debugging enabled');
 		}
 
 		_addNamespaces();
-		// Connect to BOSH service
+
+		_roster = new Candy.Core.ChatRoster();
+
+		// Connect to BOSH/Websocket service
 		_connection = new Strophe.Connection(_service);
 		_connection.rawInput = self.rawInput.bind(self);
 		_connection.rawOutput = self.rawOutput.bind(self);
 
+		// set caps node
+		_connection.caps.node = 'https://candy-chat.github.io/candy/';
+
 		// Window unload handler... works on all browsers but Opera. There is NO workaround.
 		// Opera clients getting disconnected 1-2 minutes delayed.
-		window.onbeforeunload = self.onWindowUnload;
-
-		// Prevent Firefox from aborting AJAX requests when pressing ESC
-		if($.browser.mozilla) {
-			$(document).keydown(function(e) {
-				if(e.which === 27) {
-					e.preventDefault();
-				}
-			});
+		if (!_options.disableWindowUnload) {
+			window.onbeforeunload = self.onWindowUnload;
 		}
+	};
+
+	/** Function: registerEventHandlers
+	 * Adds listening handlers to the connection.
+	 *
+	 * Use with caution from outside of Candy.
+	 */
+	self.registerEventHandlers = function() {
+		self.addHandler(self.Event.Jabber.Version, Strophe.NS.VERSION, 'iq');
+		self.addHandler(self.Event.Jabber.Presence, null, 'presence');
+		self.addHandler(self.Event.Jabber.Message, null, 'message');
+		self.addHandler(self.Event.Jabber.Bookmarks, Strophe.NS.PRIVATE, 'iq');
+		self.addHandler(self.Event.Jabber.Room.Disco, Strophe.NS.DISCO_INFO, 'iq', 'result');
+
+		self.addHandler(_connection.disco._onDiscoInfo.bind(_connection.disco), Strophe.NS.DISCO_INFO, 'iq', 'get');
+		self.addHandler(_connection.disco._onDiscoItems.bind(_connection.disco), Strophe.NS.DISCO_ITEMS, 'iq', 'get');
+		self.addHandler(_connection.caps._delegateCapabilities.bind(_connection.caps), Strophe.NS.CAPS);
 	};
 
 	/** Function: connect
@@ -154,17 +259,41 @@ Candy.Core = (function(self, Strophe, $) {
 	self.connect = function(jidOrHost, password, nick) {
 		// Reset before every connection attempt to make sure reconnections work after authfail, alltabsclosed, ...
 		_connection.reset();
-		_registerEventHandlers();
+		self.registerEventHandlers();
+		/** Event: candy:core.before-connect
+		 * Triggered before a connection attempt is made.
+		 *
+		 * Plugins should register their stanza handlers using this event
+		 * to ensure that they are set.
+		 *
+		 * See also <#84 at https://github.com/candy-chat/candy/issues/84>.
+		 *
+		 * Parameters:
+		 *   (Strophe.Connection) conncetion - Strophe connection
+		 */
+		$(Candy).triggerHandler('candy:core.before-connect', {
+			connection: _connection
+		});
 
 		_anonymousConnection = !_anonymousConnection ? jidOrHost && jidOrHost.indexOf("@") < 0 : true;
 
 		if(jidOrHost && password) {
+			// Respect the resource, if provided
+			var resource = Strophe.getResourceFromJid(jidOrHost);
+			if (resource) {
+				_options.resource = resource;
+			}
+
 			// authentication
-			_connection.connect(_getEscapedJidFromJid(jidOrHost) + '/' + Candy.about.name, password, Candy.Core.Event.Strophe.Connect);
-			_user = new self.ChatUser(jidOrHost, Strophe.getNodeFromJid(jidOrHost));
+			_connection.connect(_getEscapedJidFromJid(jidOrHost) + '/' + _options.resource, password, Candy.Core.Event.Strophe.Connect);
+			if (nick) {
+				_user = new self.ChatUser(jidOrHost, nick);
+			} else {
+				_user = new self.ChatUser(jidOrHost, Strophe.getNodeFromJid(jidOrHost));
+			}
 		} else if(jidOrHost && nick) {
 			// anonymous connect
-			_connection.connect(_getEscapedJidFromJid(jidOrHost) + '/' + Candy.about.name, null, Candy.Core.Event.Strophe.Connect);
+			_connection.connect(_getEscapedJidFromJid(jidOrHost) + '/' + _options.resource, null, Candy.Core.Event.Strophe.Connect);
 			_user = new self.ChatUser(null, nick); // set jid to null because we'll later receive it
 		} else if(jidOrHost) {
 			Candy.Core.Event.Login(jidOrHost);
@@ -172,12 +301,6 @@ Candy.Core = (function(self, Strophe, $) {
 			// display login modal
 			Candy.Core.Event.Login();
 		}
-	};
-	
-	_getEscapedJidFromJid = function(jid) {
-		var node = Strophe.getNodeFromJid(jid),
-			domain = Strophe.getDomainFromJid(jid);
-		return node ? Strophe.escapeNode(node) + '@' + domain : domain;
 	};
 
 	/** Function: attach
@@ -190,9 +313,15 @@ Candy.Core = (function(self, Strophe, $) {
 	 *   (Integer) sid - Session ID
 	 *   (Integer) rid - rid
 	 */
-	self.attach = function(jid, sid, rid) {
-		_user = new self.ChatUser(jid, Strophe.getNodeFromJid(jid));
-		_registerEventHandlers();
+	self.attach = function(jid, sid, rid, nick) {
+		if (nick) {
+			_user = new self.ChatUser(jid, nick);
+		} else {
+			_user = new self.ChatUser(jid, Strophe.getNodeFromJid(jid));
+		}
+		// Reset before every connection attempt to make sure reconnections work after authfail, alltabsclosed, ...
+		_connection.reset();
+		self.registerEventHandlers();
 		_connection.attach(jid, sid, rid, Candy.Core.Event.Strophe.Connect);
 	};
 
@@ -201,13 +330,10 @@ Candy.Core = (function(self, Strophe, $) {
 	 */
 	self.disconnect = function() {
 		if(_connection.connected) {
-			$.each(self.getRooms(), function() {
-				Candy.Core.Action.Jabber.Room.Leave(this.getJid());
-			});
 			_connection.disconnect();
 		}
 	};
-	
+
 	/** Function: addHandler
 	 * Wrapper for Strophe.Connection.addHandler() to add a stanza handler for the connection.
 	 *
@@ -225,6 +351,16 @@ Candy.Core = (function(self, Strophe, $) {
 	 */
 	self.addHandler = function(handler, ns, name, type, id, from, options) {
 		return _connection.addHandler(handler, ns, name, type, id, from, options);
+	};
+
+	/** Function: getRoster
+	 * Gets main roster
+	 *
+	 * Returns:
+	 *   Instance of Candy.Core.ChatRoster
+	 */
+	self.getRoster = function() {
+		return _roster;
 	};
 
 	/** Function: getUser
@@ -257,6 +393,16 @@ Candy.Core = (function(self, Strophe, $) {
 		return _connection;
 	};
 
+	/** Function: removeRoom
+	 * Removes a room from the rooms list
+	 *
+	 * Parameters:
+	 *   (String) roomJid - roomJid
+	 */
+	self.removeRoom = function(roomJid) {
+		delete _rooms[roomJid];
+	};
+
 	/** Function: getRooms
 	 * Gets all joined rooms
 	 *
@@ -265,6 +411,29 @@ Candy.Core = (function(self, Strophe, $) {
 	 */
 	self.getRooms = function() {
 		return _rooms;
+	};
+
+	/** Function: getStropheStatus
+	 * Get the status set by Strophe.
+	 *
+	 * Returns:
+	 *   (Strophe.Status.*) - one of Strophe's statuses
+	 */
+	self.getStropheStatus = function() {
+		return _status;
+	};
+
+	/** Function: setStropheStatus
+	 * Set the strophe status
+	 *
+	 * Called by:
+	 *   Candy.Core.Event.Strophe.Connect
+	 *
+	 * Parameters:
+	 *   (Strophe.Status.*) status - Strophe's status
+	 */
+	self.setStropheStatus = function(status) {
+		_status = status;
 	};
 
 	/** Function: isAnonymousConnection
@@ -309,7 +478,7 @@ Candy.Core = (function(self, Strophe, $) {
 	self.onWindowUnload = function() {
 		// Enable synchronous requests because Safari doesn't send asynchronous requests within unbeforeunload events.
 		// Only works properly when following patch is applied to strophejs: https://github.com/metajack/strophejs/issues/16/#issuecomment-600266
-		_connection.sync = true;
+		_connection.options.sync = true;
 		self.disconnect();
 		_connection.flush();
 	};
@@ -338,6 +507,22 @@ Candy.Core = (function(self, Strophe, $) {
 	 * See: Candy.Core#init
 	 */
 	self.log = function() {};
+
+	/** Function: warn
+	 * Print a message to the browser's "info" log
+	 * Enabled regardless of debug mode
+	 */
+	self.warn = function() {
+		Function.prototype.apply.call(console.warn, console, arguments);
+	};
+
+	/** Function: error
+	 * Print a message to the browser's "error" log
+	 * Enabled regardless of debug mode
+	 */
+	self.error = function() {
+		Function.prototype.apply.call(console.error, console, arguments);
+	};
 
 	return self;
 }(Candy.Core || {}, Strophe, jQuery));

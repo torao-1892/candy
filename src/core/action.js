@@ -1,13 +1,11 @@
 /** File: action.js
  * Candy - Chats are not dead yet.
  *
- * Authors:
- *   - Patrick Stadler <patrick.stadler@gmail.com>
- *   - Michael Weibel <michael.weibel@gmail.com>
- *
- * Copyright:
- *   (c) 2011 Amiado Group AG. All rights reserved.
+ * Legal: See the LICENSE file at the top-level directory of this distribution and at https://github.com/candy-chat/candy/blob/master/LICENSE
  */
+'use strict';
+
+/* global Candy, $iq, navigator, Candy, $pres, Strophe, jQuery, $msg */
 
 /** Class: Candy.Core.Action
  * Chat Actions (basicly a abstraction of Jabber commands)
@@ -29,14 +27,60 @@ Candy.Core.Action = (function(self, Strophe, $) {
 		 *   (jQuery.element) msg - jQuery element
 		 */
 		Version: function(msg) {
-			Candy.Core.getConnection().send($iq({type: 'result', to: msg.attr('from'), from: msg.attr('to'), id: msg.attr('id')}).c('query', {name: Candy.about.name, version: Candy.about.version, os: navigator.userAgent}));
+			Candy.Core.getConnection().sendIQ($iq({
+				type: 'result',
+				to: Candy.Util.escapeJid(msg.attr('from')),
+				from: Candy.Util.escapeJid(msg.attr('to')),
+				id: msg.attr('id')
+			}).c('query', {
+				xmlns: Strophe.NS.VERSION
+			})
+			.c('name', Candy.about.name).up()
+			.c('version', Candy.about.version).up()
+			.c('os', navigator.userAgent));
+		},
+
+		/** Function: SetNickname
+		 * Sets the supplied nickname for all rooms (if parameter "room" is not specified) or
+		 * sets it only for the specified rooms
+		 *
+		 * Parameters:
+		 *   (String) nickname - New nickname
+		 *   (Array) rooms - Rooms
+		 */
+		SetNickname: function(nickname, rooms) {
+			rooms = rooms instanceof Array ? rooms : Candy.Core.getRooms();
+			var roomNick, presence,
+				conn = Candy.Core.getConnection();
+			$.each(rooms, function(roomJid) {
+				roomNick = Candy.Util.escapeJid(roomJid + '/' + nickname);
+				presence = $pres({
+					to: roomNick,
+					from: conn.jid,
+					id: 'pres:' + conn.getUniqueId()
+				});
+				Candy.Core.getConnection().send(presence);
+			});
 		},
 
 		/** Function: Roster
 		 * Sends a request for a roster
 		 */
 		Roster: function() {
-			Candy.Core.getConnection().send($iq({type: 'get', xmlns: Strophe.NS.CLIENT}).c('query', {xmlns: Strophe.NS.ROSTER}).tree());
+			var roster = Candy.Core.getConnection().roster,
+				options = Candy.Core.getOptions();
+			roster.registerCallback(Candy.Core.Event.Jabber.RosterPush);
+			$.each(options.initialRosterItems, function (i, item) {
+				// Blank out resources because their cached value is not relevant
+				item.resources = {};
+			});
+			roster.get(
+				Candy.Core.Event.Jabber.RosterFetch,
+				options.initialRosterVersion,
+				options.initialRosterItems
+			);
+			// Bootstrap our roster with cached items
+			Candy.Core.Event.Jabber.RosterLoad(roster.items);
 		},
 
 		/** Function: Presence
@@ -44,65 +88,137 @@ Candy.Core.Action = (function(self, Strophe, $) {
 		 *
 		 * Parameters:
 		 *   (Object) attr - Optional attributes
+		 *   (Strophe.Builder) el - Optional element to include in presence stanza
 		 */
-		Presence: function(attr) {
-			Candy.Core.getConnection().send($pres(attr).tree());
+		Presence: function(attr, el) {
+			var conn = Candy.Core.getConnection();
+			attr = attr || {};
+			if(!attr.id) {
+				attr.id = 'pres:' + conn.getUniqueId();
+			}
+			var pres = $pres(attr).c('priority').t(Candy.Core.getOptions().presencePriority.toString())
+				.up().c('c', conn.caps.generateCapsAttrs())
+				.up();
+			if(el) {
+				pres.node.appendChild(el.node);
+			}
+			conn.send(pres.tree());
 		},
 
 		/** Function: Services
 		 * Sends a request for disco items
 		 */
 		Services: function() {
-			Candy.Core.getConnection().send($iq({type: 'get', xmlns: Strophe.NS.CLIENT}).c('query', {xmlns: Strophe.NS.DISCO_ITEMS}).tree());
+			Candy.Core.getConnection().sendIQ($iq({
+				type: 'get',
+				xmlns: Strophe.NS.CLIENT
+			}).c('query', {xmlns: Strophe.NS.DISCO_ITEMS}).tree());
 		},
 
 		/** Function: Autojoin
 		 * When Candy.Core.getOptions().autojoin is true, request autojoin bookmarks (OpenFire)
 		 *
 		 * Otherwise, if Candy.Core.getOptions().autojoin is an array, join each channel specified.
+		 * Channel can be in jid:password format to pass room password if needed.
+
+		 * Triggers:
+		 *   candy:core.autojoin-missing in case no autojoin info has been found
 		 */
 		Autojoin: function() {
 			// Request bookmarks
 			if(Candy.Core.getOptions().autojoin === true) {
-				Candy.Core.getConnection().send($iq({type: 'get', xmlns: Strophe.NS.CLIENT}).c('query', {xmlns: Strophe.NS.PRIVATE}).c('storage', {xmlns: Strophe.NS.BOOKMARKS}).tree());
+				Candy.Core.getConnection().sendIQ($iq({
+					type: 'get',
+					xmlns: Strophe.NS.CLIENT
+				})
+				.c('query', {xmlns: Strophe.NS.PRIVATE})
+				.c('storage', {xmlns: Strophe.NS.BOOKMARKS})
+				.tree());
+
+				var pubsubBookmarkRequest = Candy.Core.getConnection().getUniqueId('pubsub');
+				Candy.Core.addHandler(Candy.Core.Event.Jabber.Bookmarks, Strophe.NS.PUBSUB, 'iq', 'result', pubsubBookmarkRequest);
+
+				Candy.Core.getConnection().sendIQ($iq({
+					type: 'get',
+					id: pubsubBookmarkRequest
+				})
+				.c('pubsub', { xmlns: Strophe.NS.PUBSUB })
+				.c('items', { node: Strophe.NS.BOOKMARKS })
+				.tree());
 			// Join defined rooms
 			} else if($.isArray(Candy.Core.getOptions().autojoin)) {
 				$.each(Candy.Core.getOptions().autojoin, function() {
-					self.Jabber.Room.Join(this.valueOf());
+					self.Jabber.Room.Join.apply(null, this.valueOf().split(':',2));
 				});
+			} else {
+				/** Event: candy:core.autojoin-missing
+				 * Triggered when no autojoin information has been found
+				 */
+				$(Candy).triggerHandler('candy:core.autojoin-missing');
 			}
 		},
 
+		/** Function: EnableCarbons
+		 * Enable message carbons (XEP-0280)
+		 */
+		EnableCarbons: function() {
+			Candy.Core.getConnection().sendIQ($iq({
+				type: 'set'
+			})
+			.c('enable', {xmlns: Strophe.NS.CARBONS })
+			.tree());
+		},
+
 		/** Function: ResetIgnoreList
-		 * Create new ignore privacy list (and reset the old one, if it exists).
+		 * Create new ignore privacy list (and reset the previous one, if it exists).
 		 */
 		ResetIgnoreList: function() {
-			Candy.Core.getConnection().send($iq({type: 'set', from: Candy.Core.getUser().getJid(), id: 'set1'})
-				.c('query', {xmlns: Strophe.NS.PRIVACY }).c('list', {name: 'ignore'}).c('item', {'action': 'allow', 'order': '0'}).tree());
+			Candy.Core.getConnection().sendIQ($iq({
+					type: 'set',
+					from: Candy.Core.getUser().getEscapedJid()
+				})
+				.c('query', {xmlns: Strophe.NS.PRIVACY })
+				.c('list', {name: 'ignore'})
+				.c('item', {'action': 'allow', 'order': '0'})
+				.tree());
 		},
 
 		/** Function: RemoveIgnoreList
 		 * Remove an existing ignore list.
 		 */
 		RemoveIgnoreList: function() {
-			Candy.Core.getConnection().send($iq({type: 'set', from: Candy.Core.getUser().getJid(), id: 'remove1'})
-				.c('query', {xmlns: Strophe.NS.PRIVACY }).c('list', {name: 'ignore'}).tree());
+			Candy.Core.getConnection().sendIQ($iq({
+					type: 'set',
+					from: Candy.Core.getUser().getEscapedJid()
+				})
+				.c('query', {xmlns: Strophe.NS.PRIVACY })
+				.c('list', {name: 'ignore'}).tree());
 		},
 
 		/** Function: GetIgnoreList
 		 * Get existing ignore privacy list when connecting.
 		 */
 		GetIgnoreList: function() {
-			Candy.Core.getConnection().send($iq({type: 'get', from: Candy.Core.getUser().getJid(), id: 'get1'})
-				.c('query', {xmlns: Strophe.NS.PRIVACY }).c('list', {name: 'ignore'}).tree());
+			var iq = $iq({
+					type: 'get',
+					from: Candy.Core.getUser().getEscapedJid()
+				})
+				.c('query', {xmlns: Strophe.NS.PRIVACY})
+				.c('list', {name: 'ignore'}).tree();
+			var iqId = Candy.Core.getConnection().sendIQ(iq);
+			// add handler (<#200 at https://github.com/candy-chat/candy/issues/200>)
+			Candy.Core.addHandler(Candy.Core.Event.Jabber.PrivacyList, null, 'iq', null, iqId);
 		},
 
 		/** Function: SetIgnoreListActive
 		 * Set ignore privacy list active
 		 */
 		SetIgnoreListActive: function() {
-			Candy.Core.getConnection().send($iq({type: 'set', from: Candy.Core.getUser().getJid(), id: 'set2'})
-				.c('query', {xmlns: Strophe.NS.PRIVACY }).c('active', {name:'ignore'}).tree());
+			Candy.Core.getConnection().sendIQ($iq({
+					type: 'set',
+					from: Candy.Core.getUser().getEscapedJid()})
+				.c('query', {xmlns: Strophe.NS.PRIVACY })
+				.c('active', {name:'ignore'}).tree());
 		},
 
 		/** Function: GetJidIfAnonymous
@@ -133,7 +249,16 @@ Candy.Core.Action = (function(self, Strophe, $) {
 			 */
 			Join: function(roomJid, password) {
 				self.Jabber.Room.Disco(roomJid);
-				Candy.Core.getConnection().muc.join(roomJid, Candy.Core.getUser().getNick(), null, null, password);
+				roomJid = Candy.Util.escapeJid(roomJid);
+				var conn = Candy.Core.getConnection(),
+					roomNick = roomJid + '/' + Candy.Core.getUser().getNick(),
+					pres = $pres({ to: roomNick, id: 'pres:' + conn.getUniqueId() })
+						.c('x', {xmlns: Strophe.NS.MUC});
+				if (password) {
+					pres.c('password').t(password);
+				}
+				pres.up().c('c', conn.caps.generateCapsAttrs());
+				conn.send(pres.tree());
 			},
 
 			/** Function: Leave
@@ -143,7 +268,10 @@ Candy.Core.Action = (function(self, Strophe, $) {
 			 *   (String) roomJid - Room to leave
 			 */
 			Leave: function(roomJid) {
-				Candy.Core.getConnection().muc.leave(roomJid, Candy.Core.getRoom(roomJid).getUser().getNick(), function() {});
+				var user = Candy.Core.getRoom(roomJid).getUser();
+				if (user) {
+					Candy.Core.getConnection().muc.leave(roomJid, user.getNick(), function() {});
+				}
 			},
 
 			/** Function: Disco
@@ -153,7 +281,11 @@ Candy.Core.Action = (function(self, Strophe, $) {
 			 *   (String) roomJid - Room to get info for
 			 */
 			Disco: function(roomJid) {
-				Candy.Core.getConnection().send($iq({type: 'get', from: Candy.Core.getUser().getJid(), to: roomJid, id: 'disco3'}).c('query', {xmlns: Strophe.NS.DISCO_INFO}).tree());
+				Candy.Core.getConnection().sendIQ($iq({
+					type: 'get',
+					from: Candy.Core.getUser().getEscapedJid(),
+					to: Candy.Util.escapeJid(roomJid)
+				}).c('query', {xmlns: Strophe.NS.DISCO_INFO}).tree());
 			},
 
 			/** Function: Message
@@ -163,18 +295,53 @@ Candy.Core.Action = (function(self, Strophe, $) {
 			 *   (String) roomJid - Room to which send the message into
 			 *   (String) msg - Message
 			 *   (String) type - "groupchat" or "chat" ("chat" is for private messages)
+			 *   (String) xhtmlMsg - XHTML formatted message [optional]
 			 *
 			 * Returns:
 			 *   (Boolean) - true if message is not empty after trimming, false otherwise.
 			 */
-			Message: function(roomJid, msg, type) {
+			Message: function(roomJid, msg, type, xhtmlMsg) {
 				// Trim message
 				msg = $.trim(msg);
 				if(msg === '') {
 					return false;
 				}
-				Candy.Core.getConnection().muc.message(Candy.Util.escapeJid(roomJid), undefined, msg, type);
+				var nick = null;
+				if(type === 'chat') {
+					nick = Strophe.getResourceFromJid(roomJid);
+					roomJid = Strophe.getBareJidFromJid(roomJid);
+				}
+				// muc takes care of the escaping now.
+				Candy.Core.getConnection().muc.message(roomJid, nick, msg, xhtmlMsg, type);
 				return true;
+			},
+
+			/** Function: Invite
+			 * Sends an invite stanza to multiple JIDs
+			 *
+			 * Parameters:
+			 *   (String) roomJid - Room to which send the message into
+			 *   (Array)  invitees - Array of JIDs to be invited to the room
+			 *   (String) reason - Message to include with the invitation [optional]
+			 *   (String) password - Password for the MUC, if required [optional]
+			 */
+			Invite: function(roomJid, invitees, reason, password) {
+				reason = $.trim(reason);
+				var message = $msg({to: roomJid});
+				var x = message.c('x', {xmlns: Strophe.NS.MUC_USER});
+				$.each(invitees, function(i, invitee) {
+					invitee = Strophe.getBareJidFromJid(invitee);
+					x.c('invite', {to: invitee});
+					if (typeof reason !== 'undefined' && reason !== '') {
+						x.c('reason', reason);
+					}
+				});
+
+				if (typeof password !== 'undefined' && password !== '') {
+					x.c('password', password);
+				}
+
+				Candy.Core.getConnection().send(message);
 			},
 
 			/** Function: IgnoreUnignore
@@ -195,7 +362,7 @@ Candy.Core.Action = (function(self, Strophe, $) {
 			 */
 			UpdatePrivacyList: function() {
 				var currentUser = Candy.Core.getUser(),
-					iq = $iq({type: 'set', from: currentUser.getJid(), id: 'edit1'})
+					iq = $iq({type: 'set', from: currentUser.getEscapedJid()})
 						.c('query', {xmlns: 'jabber:iq:privacy' })
 							.c('list', {name: 'ignore'}),
 					privacyList = currentUser.getPrivacyList('ignore');
@@ -207,7 +374,7 @@ Candy.Core.Action = (function(self, Strophe, $) {
 				} else {
 					iq.c('item', {action: 'allow', order : '0'});
 				}
-				Candy.Core.getConnection().send(iq.tree());
+				Candy.Core.getConnection().sendIQ(iq.tree());
 			},
 
 			/** Class: Candy.Core.Action.Jabber.Room.Admin
@@ -227,21 +394,25 @@ Candy.Core.Action = (function(self, Strophe, $) {
 				 *   (Boolean) - true if sent successfully, false if type is not one of "kick" or "ban".
 				 */
 				UserAction: function(roomJid, userJid, type, reason) {
-					var iqId,
-						itemObj = {nick: Strophe.escapeNode(Strophe.getResourceFromJid(userJid))};
+					roomJid = Candy.Util.escapeJid(roomJid);
+					userJid = Candy.Util.escapeJid(userJid);
+					var itemObj = {nick: Strophe.getResourceFromJid(userJid)};
 					switch(type) {
 						case 'kick':
-							iqId = 'kick1';
 							itemObj.role = 'none';
 							break;
 						case 'ban':
-							iqId = 'ban1';
 							itemObj.affiliation = 'outcast';
 							break;
 						default:
 							return false;
 					}
-					Candy.Core.getConnection().send($iq({type: 'set', from: Candy.Core.getUser().getJid(), to: roomJid, id: iqId}).c('query', {xmlns: Strophe.NS.MUC_ADMIN }).c('item', itemObj).c('reason').t(reason).tree());
+					Candy.Core.getConnection().sendIQ($iq({
+						type: 'set',
+						from: Candy.Core.getUser().getEscapedJid(),
+						to: roomJid
+					}).c('query', {xmlns: Strophe.NS.MUC_ADMIN })
+						.c('item', itemObj).c('reason').t(reason).tree());
 					return true;
 				},
 
@@ -253,7 +424,7 @@ Candy.Core.Action = (function(self, Strophe, $) {
 				 *   (String) subject - Subject to set
 				 */
 				SetSubject: function(roomJid, subject) {
-					Candy.Core.getConnection().muc.setTopic(roomJid, subject);
+					Candy.Core.getConnection().muc.setTopic(Candy.Util.escapeJid(roomJid), subject);
 				}
 			}
 		}
